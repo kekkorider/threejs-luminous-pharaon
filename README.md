@@ -25,3 +25,7 @@ then open a new browser window and navigate to `http://localhost:1234`
 ```shell
 $ yarn build
 ```
+
+## Credits
+
+The 3D model is from [Geoffrey Marchal](https://sketchfab.com/geoffreymarchal)
