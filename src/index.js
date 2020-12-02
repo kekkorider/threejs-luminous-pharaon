@@ -1,17 +1,36 @@
 import { Scene } from 'three/src/scenes/Scene'
 import { WebGLRenderer } from 'three/src/renderers/WebGLRenderer'
 import { PerspectiveCamera } from 'three/src/cameras/PerspectiveCamera'
-import { BoxBufferGeometry } from 'three/src/geometries/BoxBufferGeometry'
-import { MeshStandardMaterial } from 'three/src/materials/MeshStandardMaterial'
-import { Mesh } from 'three/src/objects/Mesh'
-import { PointLight } from 'three/src/lights/PointLight'
 import { Color } from 'three/src/math/Color'
+import { Vector2 } from 'three/src/math/Vector2'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader'
+// import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
+import { Points } from 'three/src/objects/Points'
+import { ShaderMaterial } from 'three/src/materials/ShaderMaterial'
+import { Clock } from 'three/src/core/Clock'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass'
 
 import Tweakpane from 'tweakpane'
+
+const vertexShader = require('./shaders/vertex.glsl')
+const fragmentShader = require('./shaders/fragment.glsl')
 
 class App {
   constructor(container) {
     this.container = document.querySelector(container)
+
+    this.config = {
+      color_1: [107, 17, 210],
+      color_2: [53, 191, 210],
+      bloomPass: {
+        threshold: 0.1,
+        strength: 0.7,
+        radius: 0.5
+      }
+    }
 
     this._resizeCb = () => this._onResize()
   }
@@ -20,15 +39,18 @@ class App {
     this._createScene()
     this._createCamera()
     this._createRenderer()
-    this._createBox()
-    this._createLight()
+    // this._createControls()
+    this._createClock()
+    this._createPostProcess()
     this._addListeners()
 
     this._createDebugPanel()
 
-    this.renderer.setAnimationLoop(() => {
-      this._update()
-      this._render()
+    this._loadModel().then(() => {
+      this.renderer.setAnimationLoop(() => {
+        this._update()
+        this._render()
+      })
     })
   }
 
@@ -38,12 +60,12 @@ class App {
   }
 
   _update() {
-    this.box.rotation.y += 0.01
-    this.box.rotation.z += 0.006
+    this.points.material.uniforms.u_time.value = this.clock.getElapsedTime()
+    this.points.material.uniformsNeedUpdate = true
   }
 
   _render() {
-    this.renderer.render(this.scene, this.camera)
+    this.composer.render(this.scene, this.camera)
   }
 
   _createScene() {
@@ -52,7 +74,7 @@ class App {
 
   _createCamera() {
     this.camera = new PerspectiveCamera(75, this.container.clientWidth / this.container.clientHeight, 0.1, 100)
-    this.camera.position.set(0, 1, 10)
+    this.camera.position.set(0, 1, 20)
   }
 
   _createRenderer() {
@@ -64,28 +86,52 @@ class App {
     this.container.appendChild(this.renderer.domElement)
 
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight)
-    this.renderer.setPixelRatio(window.devicePixelRatio)
+    this.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio))
     this.renderer.setClearColor(0x121212)
     this.renderer.gammaOutput = true
     this.renderer.physicallyCorrectLights = true
   }
 
-  _createLight() {
-    this.pointLight = new PointLight(0xff0055, 500, 100, 2)
-    this.pointLight.position.set(8, 10, 13)
-    this.scene.add(this.pointLight)
+  _loadModel() {
+    return new Promise(resolve => {
+      this.loader = new GLTFLoader()
+
+      const dracoLoader = new DRACOLoader()
+      dracoLoader.setDecoderPath('/')
+
+      this.loader.setDRACOLoader(dracoLoader)
+
+      this.loader.load('./king.glb', gltf => {
+        console.log(gltf.scene)
+        this.mesh = gltf.scene.children[0]
+
+        const material = new ShaderMaterial({
+          vertexShader,
+          fragmentShader,
+          transparent: true,
+          blending: 1, // THREE.NormalBlending,
+          uniforms: {
+            u_time: { type: 'f', value: 0 },
+            u_color_1: { type: 'vec3', value: new Color().setRGB(this.config.color_1[0] / 255, this.config.color_1[1] / 255, this.config.color_1[2] / 255) },
+            u_color_2: { type: 'vec3', value: new Color().setRGB(this.config.color_2[0] / 255, this.config.color_2[1] / 255, this.config.color_2[2] / 255) }
+          }
+        })
+
+        this.points = new Points(this.mesh.geometry, material)
+
+        this.scene.add(this.points)
+
+        resolve()
+      })
+    })
   }
 
-  _createBox() {
-    const geometry = new BoxBufferGeometry(1, 1, 1, 1, 1, 1)
+  _createControls() {
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
+  }
 
-    const material = new MeshStandardMaterial({ color: 0xffffff })
-
-    this.box = new Mesh(geometry, material)
-    this.box.scale.x = 5
-    this.box.scale.y = 5
-    this.box.scale.z = 5
-    this.scene.add(this.box)
+  _createClock() {
+    this.clock = new Clock()
   }
 
   _createDebugPanel() {
@@ -99,48 +145,66 @@ class App {
     let params = { background: { r: 18, g: 18, b: 18 } }
 
     sceneFolder.addInput(params, 'background', { label: 'Background Color' }).on('change', value => {
-      this.renderer.setClearColor(new Color(`rgb(${parseInt(value.r)}, ${parseInt(value.g)}, ${parseInt(value.b)})`))
+      this.renderer.setClearColor(new Color().setRGB(value.r / 255, value.g / 255, value.b / 255))
     })
 
     /**
-     * Box configuration
+     * Colors configuration
      */
-    const boxFolder = this.pane.addFolder({ title: 'Box' })
-
-    params = { width: 5, height: 5, depth: 5, metalness: 0.5, roughness: 0.5 }
-
-    boxFolder.addInput(params, 'width', { label: 'Width', min: 1, max: 8 })
-      .on('change', value => this.box.scale.x = value)
-
-    boxFolder.addInput(params, 'height', { label: 'Height', min: 1, max: 8 })
-      .on('change', value => this.box.scale.y = value)
-
-    boxFolder.addInput(params, 'depth', { label: 'Depth', min: 1, max: 8 })
-      .on('change', value => this.box.scale.z = value)
-
-    boxFolder.addInput(params, 'metalness', { label: 'Metallic', min: 0, max: 1 })
-      .on('change', value => this.box.material.metalness = value)
-
-    boxFolder.addInput(params, 'roughness', { label: 'Roughness', min: 0, max: 1 })
-      .on('change', value => this.box.material.roughness = value)
-
-    /**
-     * Light configuration
-     */
-    const lightFolder = this.pane.addFolder({ title: 'Light' })
+    const colorsFolder = this.pane.addFolder({ title: 'Colors' })
 
     params = {
-      color: { r: 255, g: 0, b: 85 },
-      intensity: 500
+      color_1: { r: this.config.color_1[0], g: this.config.color_1[1], b: this.config.color_1[2] },
+      color_2: { r: this.config.color_2[0], g: this.config.color_2[1], b: this.config.color_2[2] }
     }
 
-    lightFolder.addInput(params, 'color', { label: 'Color' }).on('change', value => {
-      this.pointLight.color = new Color(`rgb(${parseInt(value.r)}, ${parseInt(value.g)}, ${parseInt(value.b)})`)
+    colorsFolder.addInput(params, 'color_1', { label: 'Color 1' }).on('change', value => {
+      this.points.material.uniforms.u_color_1.value = new Color().setRGB(value.r / 255, value.g / 255, value.b / 255)
+      this.points.material.uniformsNeedUpdate = true
     })
 
-    lightFolder.addInput(params, 'intensity', { label: 'Intensity', min: 0, max: 1000 }).on('change', value => {
-      this.pointLight.intensity = value
+    colorsFolder.addInput(params, 'color_2', { label: 'Color 2' }).on('change', value => {
+      this.points.material.uniforms.u_color_2.value = new Color().setRGB(value.r / 255, value.g / 255, value.b / 255)
+      this.points.material.uniformsNeedUpdate = true
     })
+
+    /**
+     * Bloom
+     */
+    const bloomFolder = this.pane.addFolder({ title: 'Bloom' })
+
+    params = {
+      threshold: this.config.bloomPass.threshold,
+      strength: this.config.bloomPass.strength,
+      radius: this.config.bloomPass.radius
+    }
+
+    bloomFolder.addInput(params, 'threshold', { label: 'Threshold', min: 0.1, max: 0.5 }).on('change', value => {
+      this.bloomPass.threshold = value
+    })
+
+    bloomFolder.addInput(params, 'strength', { label: 'Strength', min: 0, max: 1 }).on('change', value => {
+      this.bloomPass.strength = value
+    })
+
+    bloomFolder.addInput(params, 'radius', { label: 'Radius', min: 0, max: 1 }).on('change', value => {
+      this.bloomPass.radius = value
+    })
+  }
+
+  _createPostProcess() {
+    const renderPass = new RenderPass(this.scene, this.camera)
+
+    this.bloomPass = new UnrealBloomPass(
+      new Vector2(this.container.clientWidth, this.container.clientHeight),
+      this.config.bloomPass.strength,
+      this.config.bloomPass.radius,
+      this.config.bloomPass.threshold
+    )
+
+    this.composer = new EffectComposer(this.renderer)
+    this.composer.addPass(renderPass)
+    this.composer.addPass(this.bloomPass)
   }
 
   _addListeners() {
@@ -155,6 +219,7 @@ class App {
     this.camera.aspect = this.container.clientWidth / this.container.clientHeight
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight)
+    this.composer.setSize(this.container.clientWidth, this.container.clientHeight)
   }
 }
 
